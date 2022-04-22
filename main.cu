@@ -203,7 +203,7 @@ int main()
 {
 	string url_left = "rtsp://192.168.31.12:554/user=admin&password=&channel=1&stream=0.sdp?real_stream";
 	string url_right = "rtsp://192.168.31.24:554/user=admin&password=&channel=1&stream=0.sdp?real_stream";
-	string filename = "../../鱼眼摄像头标定/鱼眼摄像头标定/intrinsics.xml";
+	string filename = "intrinsics.xml";
 	Corrector corrector(filename);
 	int opt = 3;
 
