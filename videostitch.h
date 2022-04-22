@@ -462,7 +462,7 @@ int GetOptimalSeam(cuda::GpuMat left, cuda::GpuMat right, cuda::GpuMat &seam, in
 	//动态规划计算最佳缝合线路径，分两种情况
 	cuda::GpuMat path(rows, cols, CV_64FC2, Scalar(inf, inf));
 	{
-		int t1 = clock();
+		//int t1 = clock();
 		if (overlap_right - overlap_left + 1 <= 1024) {
 			CalPath_DP << <1, overlap_right - overlap_left + 1 >> > (E, path, overlap_left);
 			CHECK(cudaGetLastError());
@@ -475,18 +475,18 @@ int GetOptimalSeam(cuda::GpuMat left, cuda::GpuMat right, cuda::GpuMat &seam, in
 				CHECK(cudaDeviceSynchronize());
 			}
 		}
-		int t2 = clock();
-		cout << "动态规划耗时:" << t2 - t1 << endl;
+		//int t2 = clock();
+		//cout << "动态规划耗时:" << t2 - t1 << endl;
 	}
 
 	//回溯得到缝合线x坐标,gpu
 	{
-		int t1 = clock();
+		//int t1 = clock();
 		CalSeam << <1, 1 >> > (seam, path);
 		CHECK(cudaGetLastError());
 		CHECK(cudaDeviceSynchronize());
-		int t2 = clock();
-		cout << "回溯耗时:" << t2 - t1 << endl;
+		//int t2 = clock();
+		//cout << "回溯耗时:" << t2 - t1 << endl;
 	}
 
 	//path show
@@ -751,7 +751,7 @@ public:
 		cuda::warpPerspective(right_temp_gpu, right_temp_gpu, H, result_siz);
 
 		//右图高斯模糊,低效
-		Mat temp;
+		//Mat temp;
 		//right_temp_gpu.download(temp);
 		//GaussianBlur(temp, temp, Size(3, 3), 3, 3);
 		//right_temp_gpu.upload(temp);
