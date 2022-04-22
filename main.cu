@@ -189,7 +189,7 @@ void show_thread() {
 		int t = clock();
 		sum += t - last_t;
 		cnt++;
-		cout << "******最终每帧耗时:" << t - last_t << " ,平均耗时:" << sum / cnt << endl;
+		cout << "流水线******最终单帧耗时:" << t - last_t << " ,平均每帧耗时:" << sum / cnt << endl;
 		last_t = t;
 		
 		//Sleep(10);
@@ -281,7 +281,7 @@ int main()
 			//waitKey(1);
 			int now = clock();
 			pool.enqueue(stitch_thread, left_gpu, right_gpu, now, stitcher);
-			//Sleep(10);
+			Sleep(10);
 		}
 
 		showThread.join();

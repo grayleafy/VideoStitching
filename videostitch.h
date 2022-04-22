@@ -421,7 +421,7 @@ __global__ void CalSeam(cuda::PtrStepSz<int> seam, cuda::PtrStepSz<double2> path
 	}
 }
 
-//求解最佳缝合线，left和right的大小需相等，,返回0则成功。仅适用于CV_8UC4和CV_GRAY
+//CUDA求解最佳缝合线，left和right的大小需相等，,返回0则成功。仅适用于CV_8UC4和CV_GRAY
 int GetOptimalSeam(cuda::GpuMat left, cuda::GpuMat right, cuda::GpuMat &seam, int overlap_left, int overlap_right) {
 	if (left.size() != right.size()) {
 		cout << "图片大小不一致，求解最佳缝合线失败\n";
@@ -487,6 +487,197 @@ int GetOptimalSeam(cuda::GpuMat left, cuda::GpuMat right, cuda::GpuMat &seam, in
 		CHECK(cudaDeviceSynchronize());
 		//int t2 = clock();
 		//cout << "回溯耗时:" << t2 - t1 << endl;
+	}
+
+	//path show
+	/*
+	{
+		Mat e(path.size(), CV_8UC1);
+		Mat temp;
+		path.download(temp);
+		for (int y = 0; y < temp.rows; y++) {
+			for (int x = 0; x < temp.cols; x++) {
+				if (y == 0) {
+					printf("x = %d, y = %d,  path = %lf\n", x, y, temp.at<Vec2d>(y, x)[1]);
+				}
+				e.at<uchar>(y, x) = (double)255 * temp.at<Vec2d>(y, x)[1] / 20000.0;
+			}
+		}
+		resize(e, e, Size(0, 0), 0.3, 0.3);
+		imshow("path", e);
+		waitKey(1);
+	}
+	*/
+
+	return 0;
+}
+
+//CUDA计算最佳缝合线能量函数，仅适用于CV_GRAY，只计算重叠区域
+__global__ void CalE(cuda::PtrStepSz<uchar> left, cuda::PtrStepSz<uchar> right, cuda::PtrStepSz<double> E, int from) {
+	int x = blockIdx.x * blockDim.x + threadIdx.x + from;
+	int ex = x - from;
+	int y = blockIdx.y * blockDim.y + threadIdx.y;
+	if (x >= left.cols || y >= left.rows)	return;
+	E(y, ex) = 0;
+
+	//无关部分
+	if (left(y, x) == 0 && right(y, x) == 0) {
+		E(y, ex) = 0;
+		return;
+	}
+	//边界点
+	if (x - 1 < 0 || x + 1 >= left.cols || y - 1 < 0 || y + 1 >= left.rows) {
+		E(y, ex) = 2000.0;
+		return;
+	}
+
+	//颜色差异
+	double temp;
+	temp = 0;
+	for (int i = -1; i <= 1; i++) {
+		for (int j = -1; j <= 1; j++) {
+			double val = (double)left(y + j, x + i) - right(y + j, x + i);
+			if (val > 0)	temp += val;
+			else			temp -= val;
+		}
+	}
+	temp /= 9.0;
+	E(y, ex) += temp;
+
+
+
+	//梯度差异
+	double res = 0;
+	res = 0;
+	//下
+	res += 2.0 * left(y + 1, x + 1);
+	res -= 2.0 * left(y + 1, x - 1);
+	//中
+	res += 1.0 * left(y, x + 1);
+	res -= 1.0 * left(y, x - 1);
+	//上
+	res += 2.0 * left(y - 1, x + 1);
+	res -= 2.0 * left(y - 1, x - 1);
+	double grand_left_x = res; /*left,x方向*/
+
+	res = 0;
+	//左
+	res += 2.0 * left(y + 1, x - 1);
+	res -= 2.0 * left(y - 1, x - 1);
+	//中
+	res += 1.0 * left(y + 1, x);
+	res -= 1.0 * left(y - 1, x);
+	//右
+	res += 2.0 * left(y + 1, x + 1);
+	res -= 2.0 * left(y - 1, x + 1);
+	double grand_left_y = res;
+
+	res = 0;
+	//下
+	res += 2.0 * right(y + 1, x + 1);
+	res -= 2.0 * right(y + 1, x - 1);
+	//中
+	res += 1.0 * right(y, x + 1);
+	res -= 1.0 * right(y, x - 1);
+	//上
+	res += 2.0 * right(y - 1, x + 1);
+	res -= 2.0 * right(y - 1, x - 1);
+	double grand_right_x = res;
+
+	res = 0;
+	//左
+	res += 2.0 * right(y + 1, x - 1);
+	res -= 2.0 * right(y - 1, x - 1);
+	//中
+	res += 1.0 * right(y + 1, x);
+	res -= 1.0 * right(y - 1, x);
+	//右
+	res += 2.0 * right(y + 1, x + 1);
+	res -= 2.0 * right(y - 1, x + 1);
+	double grand_right_y = res;
+
+	E(y, ex) += d_fabs((grand_left_x - grand_right_x) * (grand_left_y - grand_right_y));
+	return;
+}
+
+//CUDA和GPU求解最佳缝合线，left和right的大小需相等，,返回0则成功。仅适用于CV_8UC4和CV_GRAY
+int GetOptimalSeam_CPU(cuda::GpuMat left, cuda::GpuMat right, cuda::GpuMat &seam, int overlap_left, int overlap_right) {
+	if (left.size() != right.size()) {
+		cout << "图片大小不一致，求解最佳缝合线失败\n";
+		return -1;
+	}
+	if (left.type() == CV_8UC4) cuda::cvtColor(left, left, COLOR_BGRA2GRAY);
+	if (right.type() == CV_8UC4) cuda::cvtColor(right, right, COLOR_BGRA2GRAY);
+	int rows = left.rows;
+	int cols = left.cols;
+	int overlap_len = overlap_right - overlap_left + 1;
+	
+	
+
+	//计算能量函数
+	cuda::GpuMat E(rows, overlap_len, CV_64FC1);
+	dim3 block_siz(32, 32);
+	dim3 block_num((overlap_len + block_siz.x - 1) / block_siz.x, (rows + block_siz.y - 1) / block_siz.y);
+	CalE << <block_num, block_siz >> > (left, right, E, overlap_left);
+	CHECK(cudaGetLastError());
+	CHECK(cudaDeviceSynchronize());
+
+	//动态规划求最佳路径
+	Mat E_cpu;
+	E.download(E_cpu);
+	Mat path(rows, overlap_len, CV_64FC2, Scalar(inf, inf));
+	//最后一列初始化
+	double *p_path = (double*)path.data + (rows - 1) * path.step1();
+	double *p_E = (double*)E_cpu.data + (rows - 1) * E_cpu.step1();
+	for (int x = 0; x < overlap_len; x++) {
+		p_path[0] = p_E[0];
+		p_path += 2;
+		p_E++;
+	}
+	//向上更新
+	for (int y = rows - 2; y >= 0; y--) {
+		double *p_path = (double*)path.data + y * path.step1();
+		double *p_path_last = (double*)path.data + (y + 1) * path.step1();
+		double *p_E = (double*)E_cpu.data + y * E_cpu.step1();
+		for (int x = 0; x < overlap_len; x++) {
+			p_path[2 * x + 1] = x;
+			p_path[2 * x] = p_path_last[2 * x];
+
+			if (x - 1 >= 0 && p_path_last[2 * (x - 1)] < p_path[2 * x]) {
+				p_path[2 * x] = p_path_last[2 * (x - 1)];
+				p_path[2 * x + 1] = x - 1;
+			}
+
+			if (x + 1 < overlap_len && p_path_last[2 * (x + 1)] < p_path[2 * x]) {
+				p_path[2 * x] = p_path_last[2 * (x + 1)];
+				p_path[2 * x + 1] = x + 1;
+			}
+
+			p_path[2 * x] += p_E[x];
+			p_path[2 * x + 1] += overlap_left;
+		}
+	}
+
+
+
+	//回溯得到缝合线x坐标,gpu
+	{
+		Mat seam_cpu(rows, 1, CV_32S);
+		//从第一行找最小
+		seam_cpu.at<int>(0, 0) = 0;
+		double temp = inf;
+		double *p_path = (double*)path.data;
+		for (int x = 0; x < overlap_len; x++) {
+			if (p_path[2 * x] < temp) {
+				temp = p_path[2 * x];
+				seam_cpu.at<int>(0, 0) = x + overlap_left;
+			}
+		}
+		//向下更新
+		for (int y = 1; y < rows; y++) {
+			seam_cpu.at<int>(y, 0) = path.at<Vec2d>(y - 1, seam_cpu.at<int>(y - 1, 0) - overlap_left)[1];
+		}
+		seam.upload(seam_cpu);
 	}
 
 	//path show
@@ -766,13 +957,13 @@ public:
 		//cout << "gain: " << t2 - t1 << endl;
 
 		//求最佳缝合线
-		cuda::GpuMat seam_gpu;
+		cuda::GpuMat seam_gpu(result_siz.height, 1, CV_32SC1, Scalar(1800));
 		cuda::GpuMat left_temp_gpu(result_siz, CV_8UC4);
 		left_gpu.copyTo(left_temp_gpu(Rect(0, 0, left_gpu.cols, left_gpu.rows)));
-		GetOptimalSeam(left_temp_gpu, right_temp_gpu, seam_gpu, overlap_left, overlap_right);
+		GetOptimalSeam_CPU(left_temp_gpu, right_temp_gpu, seam_gpu, overlap_left, overlap_right);
 
 		//最佳缝合线拼接
-		cuda::GpuMat result_gpu(result_siz, CV_8UC4);
+		cuda::GpuMat result_gpu(result_siz, CV_8UC4);	
 		{
 			cuda::GpuMat left_temp_gpu(result_siz, CV_8UC4, Scalar(0, 0, 0, 0));
 			left_gpu.copyTo(left_temp_gpu(Rect(0, 0, left_gpu.cols, left_gpu.rows)));
