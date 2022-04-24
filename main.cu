@@ -101,22 +101,22 @@ void read_thread(Ptr<cudacodec::VideoReader> &cap, cuda::GpuMat &d_frame, mutex 
 	}
 }
 
-//rtsp视频流
+//rtsp视频流，输入url初始化
 class Video {
 	
 	string url;
 	Ptr<cudacodec::VideoReader> cap;
 	cuda::GpuMat d_frame;
 	Mat cpu_frame;
-
-public:
 	mutex mtx;
+public:
+	
 	Video(string url) :url(url) {
 		cap = cudacodec::createVideoReader(url);
 	}
 
 	//在子线程中不断读取实时视频
-	void read_run() {
+	void run() {
 		thread t(read_thread, ref(cap), ref(d_frame), ref(mtx));
 		t.detach();
 	}
@@ -125,18 +125,14 @@ public:
 		return d_frame;
 	}
 
-	void show() {
-		while (1) {
-			unique_lock<mutex> m(mtx);
-			d_frame.download(cpu_frame);
-			m.unlock();
-			imshow("img", cpu_frame);
-			waitKey(1);
-		}
+	void show() {	
+		unique_lock<mutex> m(mtx);
+		d_frame.download(cpu_frame);
+		imshow("img", cpu_frame);	
 	}
 
 	//获取最新的gpu图像
-	void read_gpu(cuda::GpuMat &outputArray) {
+	void read(cuda::GpuMat &outputArray) {
 		unique_lock<mutex> m(mtx);
 		outputArray = d_frame;
 		m.unlock();
@@ -175,7 +171,7 @@ void stitch_thread(cuda::GpuMat left_gpu, cuda::GpuMat right_gpu, int img_time, 
 }
 
 //显示结果图片线程
-void show_thread() {
+void show_thread(int frame_time) {
 	int sum = 0;
 	int cnt = 0;
 	int last_t = clock();
@@ -183,10 +179,12 @@ void show_thread() {
 		unique_lock<mutex> lck(mtx);
 		while (ready_show == 0)	condtion_var.wait(lck);
 		ready_show = 0;
+		int t = clock();
+		if (t - last_t < frame_time)	Sleep(frame_time - (t - last_t));
 		//resize(img_show, img_show, Size(0, 0), 0.5, 0.5, INTER_LINEAR);
 		imshow("res", img_show);
-		waitKey(1);
-		int t = clock();
+		waitKey(1);	
+		t = clock();
 		sum += t - last_t;
 		cnt++;
 		cout << "流水线******最终单帧耗时:" << t - last_t << " ,平均每帧耗时:" << sum / cnt << endl;
@@ -207,7 +205,72 @@ int main()
 	Corrector corrector(filename);
 	int opt = 3;
 
-	
+	//rtsp视频流
+	if (opt == 1) {
+		Video cap_left(url_left);
+		Video cap_right(url_right);
+		cap_left.run();
+		cap_right.run();
+		namedWindow("left");
+		namedWindow("right");
+
+		cuda::GpuMat left_gpu, right_gpu;
+		while (1) {
+			cap_left.read(left_gpu);
+			cap_right.read(right_gpu);
+			corrector.FishRemap(left_gpu, left_gpu);
+			corrector.FishRemap(right_gpu, right_gpu);
+			cuda::resize(left_gpu, left_gpu, Size(0, 0), 0.5, 0.5);
+			cuda::resize(right_gpu, right_gpu, Size(0, 0), 0.5, 0.5);
+			Mat left, right;
+			left_gpu.download(left);
+			right_gpu.download(right);
+			imshow("left", left);
+			imshow("right", right);
+			if (waitKey(40) == 13)	break;
+		}
+		destroyAllWindows();
+
+		cap_left.read(left_gpu);
+		cap_right.read(right_gpu);
+		corrector.FishRemap(left_gpu, left_gpu);
+		corrector.FishRemap(right_gpu, right_gpu);
+		VideoStitcher stitcher;
+		stitcher.init(left_gpu, right_gpu);
+
+		//显示结果线程
+		thread showThread(show_thread, 30);
+		ThreadPool pool(16);
+
+		while (1) {
+			cap_left.read(left_gpu);
+			cap_right.read(right_gpu);
+
+			//cuda::cvtColor(src_left_gpu, src_left_gpu, COLOR_BGRA2BGR);
+			//cuda::cvtColor(src_right_gpu, src_right_gpu, COLOR_BGRA2BGR);
+			//cout << "width:" << src_left_gpu.size() << endl;
+
+			corrector.FishRemap(left_gpu, left_gpu);
+			corrector.FishRemap(right_gpu, right_gpu);
+
+			//cuda::resize(src_left_gpu, src_left_gpu, Size(0, 0), 0.5, 0.5);
+			//cuda::resize(src_right_gpu, src_right_gpu, Size(0, 0), 0.5, 0.5);
+
+			//Mat src_left, src_right;
+			//src_left_gpu.download(src_left);
+			//src_right_gpu.download(src_right);
+			//imshow("left", src_left);
+			//imshow("right", src_right);
+			//imwrite("day left.jpg", src_left);
+			//imwrite("day right.jpg", src_right);
+			//waitKey(1);
+			int now = clock();
+			pool.enqueue(stitch_thread, left_gpu, right_gpu, now, stitcher);
+			Sleep(10);
+		}
+
+		showThread.join();
+	}
 	//靖世九柱，流水线
 	if (opt == 2) {
 		int last_t = clock();
@@ -218,22 +281,23 @@ int main()
 		Mat right = imread("right.jpg");
 		resize(left, left, Size(0, 0), 0.5, 0.5, INTER_LINEAR);
 		resize(right, right, Size(0, 0), 0.5, 0.5, INTER_LINEAR);
+		cvtColor(left, left, COLOR_BGR2BGRA);
+		cvtColor(right, right, COLOR_BGR2BGRA);
 		cuda::GpuMat left_gpu, right_gpu;
 		left_gpu.upload(left);
 		right_gpu.upload(right);
-
-		thread showThread(show_thread);
-		ThreadPool pool(32);
-		while (1) {
-			Sleep(10);
-			int now = clock();
-//			pool.enqueue(stitch_thread, right_gpu, left_gpu, now);
-			
 	
+		VideoStitcher stitcher;
+		stitcher.init(left_gpu, right_gpu);
 
-			int t = clock();
-		//	cout << "\n\n每帧耗时:" << t - last_t << endl << endl << endl;
-			last_t = t;
+		thread showThread(show_thread, 20);
+		ThreadPool pool(16);
+		while (1) {
+			Sleep(30);
+			int now = clock();
+			cuda::GpuMat l = left_gpu.clone();
+			cuda::GpuMat r = right_gpu.clone();
+			pool.enqueue(stitch_thread, l, r, now, stitcher);
 		}
 		
 		showThread.join();
@@ -252,8 +316,8 @@ int main()
 		stitcher.init(left_gpu, right_gpu);
 
 		//显示结果线程
-		thread showThread(show_thread);
-		ThreadPool pool(32);
+		thread showThread(show_thread, 10);
+		ThreadPool pool(16);
 
 		int last_t = clock();
 		int tt = 1;

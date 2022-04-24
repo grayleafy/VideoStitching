@@ -41,19 +41,18 @@ __global__ void ClearSurplus_8UC4(cuda::PtrStepSz<uchar4> inputArray, cuda::PtrS
 }
 
 //CUDA曝光差异矫正
-__global__ void GainCompensation_8UC4(cuda::PtrStepSz<uchar4> inputArray, double alpha_blue, double beta_blue, double alpha_green, double beta_green, double alpha_red, double beta_red) {
+__global__ void GainCompensation_8UC4(cuda::PtrStepSz<uchar4> inputArray, double alpha_blue, double beta_blue, double alpha_green, double beta_green, double alpha_red, double beta_red, int overlap_right) {
 	int x = blockIdx.x * blockDim.x + threadIdx.x;
 	int y = blockIdx.y * blockDim.y + threadIdx.y;
 	if (x >= inputArray.cols || y >= inputArray.rows)	return;
 	if (inputArray(y, x).w == 0)	return;
-	//int threshold = 0;
-	//if (inputArray(y, x).x < threshold && inputArray(y, x).y < threshold && inputArray(y, x).z < threshold)	return;
-	//if (inputArray(y, x).x >= threshold)	
-	inputArray(y, x).x = alpha_blue * (double)inputArray(y, x).x + beta_blue;
-	//if (inputArray(y, x).y >= threshold)	
-	inputArray(y, x).y = alpha_green * (double)inputArray(y, x).y + beta_green;
-	//if (inputArray(y, x).z >= threshold)	
-	inputArray(y, x).z = alpha_red * (double)inputArray(y, x).z + beta_red;
+	double weight = 1.0;
+	if (x > overlap_right) {
+		weight = (double)(inputArray.cols - x) * (double)(inputArray.cols - x) / (double)(inputArray.cols - overlap_right) / (double)(inputArray.cols - overlap_right);
+	}
+	inputArray(y, x).x = (1.0 + weight * (alpha_blue - 1.0)) * (double)inputArray(y, x).x + weight * beta_blue;
+	inputArray(y, x).y = (1.0 + weight * (alpha_green - 1.0)) * (double)inputArray(y, x).y + weight * beta_green;
+	inputArray(y, x).z = (1.0 + weight * (alpha_red - 1.0)) * (double)inputArray(y, x).z + weight * beta_red;
 	return;
 }
 
@@ -625,6 +624,7 @@ int GetOptimalSeam_CPU(cuda::GpuMat left, cuda::GpuMat right, cuda::GpuMat &seam
 	//动态规划求最佳路径
 	Mat E_cpu;
 	E.download(E_cpu);
+	E.release();
 	Mat path(rows, overlap_len, CV_64FC2, Scalar(inf, inf));
 	//最后一列初始化
 	double *p_path = (double*)path.data + (rows - 1) * path.step1();
@@ -731,7 +731,20 @@ __global__ void ImageBlend(cuda::PtrStepSz<uchar4> left, cuda::PtrStepSz<uchar4>
 	int y = blockIdx.y * blockDim.y + threadIdx.y;
 	if (x >= result.cols || y >= result.rows)	return;
 
-	if (x < seam(y, 0) - len) {
+
+	if (right(y, x).w == 0) {
+		result(y, x).x = left(y, x).x;
+		result(y, x).y = left(y, x).y;
+		result(y, x).z = left(y, x).z;
+		result(y, x).w = left(y, x).w;
+	}
+	else if (left(y, x).w == 0) {
+		result(y, x).x = right(y, x).x;
+		result(y, x).y = right(y, x).y;
+		result(y, x).z = right(y, x).z;
+		result(y, x).w = right(y, x).w;
+	}
+	else if (x < seam(y, 0) - len) {
 		result(y, x).x = left(y, x).x;
 		result(y, x).y = left(y, x).y;
 		result(y, x).z = left(y, x).z;
@@ -931,7 +944,7 @@ public:
 		cuda::GpuMat right_temp_gpu;
 		right_gpu.copyTo(right_temp_gpu);
 		dim3 block_siz(32, 32);
-		dim3 block_num((right_gpu.cols + block_siz.x - 1) / block_siz.x, (right_gpu.rows + block_siz.y - 1) / block_siz.y);
+		dim3 block_num((right_temp_gpu.cols + block_siz.x - 1) / block_siz.x, (right_temp_gpu.rows + block_siz.y - 1) / block_siz.y);
 		if (right_gpu.type() == CV_8UC4) {
 			ClearSurplus_8UC4 << <block_num, block_siz >> > (right_temp_gpu, H_gpu);
 			CHECK(cudaGetLastError());
@@ -939,7 +952,10 @@ public:
 		}
 
 		//右图进行透视变换
+		//int t1 = clock();
 		cuda::warpPerspective(right_temp_gpu, right_temp_gpu, H, result_siz);
+		int t2 = clock();
+		//cout << "t = " << t1 - t2 << endl;
 
 		//右图高斯模糊,低效
 		//Mat temp;
@@ -948,16 +964,14 @@ public:
 		//right_temp_gpu.upload(temp);
 
 		//右图曝光差异矫正
-		//int t1 = clock();
 		block_num = dim3((right_temp_gpu.cols + block_siz.x - 1) / block_siz.x, (right_temp_gpu.rows + block_siz.y - 1) / block_siz.y);
-		GainCompensation_8UC4 << <block_num, block_siz >> > (right_temp_gpu, alpha_blue, beta_blue, alpha_green, beta_green, alpha_red, beta_red);
+		GainCompensation_8UC4 << <block_num, block_siz >> > (right_temp_gpu, alpha_blue, beta_blue, alpha_green, beta_green, alpha_red, beta_red, overlap_right);
 		CHECK(cudaGetLastError());
 		CHECK(cudaDeviceSynchronize());
-		//int t2 = clock();
-		//cout << "gain: " << t2 - t1 << endl;
+
 
 		//求最佳缝合线
-		cuda::GpuMat seam_gpu(result_siz.height, 1, CV_32SC1, Scalar(1800));
+		cuda::GpuMat seam_gpu;
 		cuda::GpuMat left_temp_gpu(result_siz, CV_8UC4);
 		left_gpu.copyTo(left_temp_gpu(Rect(0, 0, left_gpu.cols, left_gpu.rows)));
 		GetOptimalSeam_CPU(left_temp_gpu, right_temp_gpu, seam_gpu, overlap_left, overlap_right);
@@ -965,8 +979,6 @@ public:
 		//最佳缝合线拼接
 		cuda::GpuMat result_gpu(result_siz, CV_8UC4);	
 		{
-			cuda::GpuMat left_temp_gpu(result_siz, CV_8UC4, Scalar(0, 0, 0, 0));
-			left_gpu.copyTo(left_temp_gpu(Rect(0, 0, left_gpu.cols, left_gpu.rows)));
 			dim3 block_siz(32, 32);
 			dim3 block_num((result_gpu.cols + block_siz.x - 1) / block_siz.x, (result_gpu.rows + block_siz.y - 1) / block_siz.y);
 			ImageBlend << <block_num, block_siz >> > (left_temp_gpu, right_temp_gpu, seam_gpu, result_gpu, 20);
