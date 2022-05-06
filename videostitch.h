@@ -599,6 +599,8 @@ __global__ void CalE(cuda::PtrStepSz<uchar> left, cuda::PtrStepSz<uchar> right, 
 	return;
 }
 
+const int len = 10;
+
 //CUDA和GPU求解最佳缝合线，left和right的大小需相等，,返回0则成功。仅适用于CV_8UC4和CV_GRAY
 int GetOptimalSeam_CPU(cuda::GpuMat left, cuda::GpuMat right, cuda::GpuMat &seam, int overlap_left, int overlap_right) {
 	if (left.size() != right.size()) {
@@ -630,9 +632,10 @@ int GetOptimalSeam_CPU(cuda::GpuMat left, cuda::GpuMat right, cuda::GpuMat &seam
 	double *p_path = (double*)path.data + (rows - 1) * path.step1();
 	double *p_E = (double*)E_cpu.data + (rows - 1) * E_cpu.step1();
 	for (int x = 0; x < overlap_len; x++) {
-		p_path[0] = p_E[0];
-		p_path += 2;
-		p_E++;
+		p_path[2 * x] = p_E[x];
+
+		//p_path += 2;
+		//p_E++;
 	}
 	//向上更新
 	for (int y = rows - 2; y >= 0; y--) {
@@ -653,8 +656,19 @@ int GetOptimalSeam_CPU(cuda::GpuMat left, cuda::GpuMat right, cuda::GpuMat &seam
 				p_path[2 * x + 1] = x + 1;
 			}
 
-			p_path[2 * x] += p_E[x];
 			p_path[2 * x + 1] += overlap_left;
+			p_path[2 * x] += p_E[x];
+			//改进部分
+			for (int i = 1; i <= len; i++) {
+				if (x - i >= 0) {
+					p_path[2 * x] += p_E[x - i];
+				}
+				else {
+
+				}
+				if (x + i < overlap_len)	p_path[2 * x] += p_E[x + i];
+			}
+			
 		}
 	}
 
@@ -725,7 +739,7 @@ __global__ void DrawSeam(cuda::PtrStepSz<uchar4> image, cuda::PtrStepSz<int> sea
 	}
 }
 
-//最佳缝合线图像融合, 仅适用于CV_8UC4
+//最佳缝合线结合渐入渐出图像融合, 仅适用于CV_8UC4
 __global__ void ImageBlend(cuda::PtrStepSz<uchar4> left, cuda::PtrStepSz<uchar4> right, cuda::PtrStepSz<int> seam, cuda::PtrStepSz<uchar4> result, int len) {
 	int x = blockIdx.x * blockDim.x + threadIdx.x;
 	int y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -763,6 +777,104 @@ __global__ void ImageBlend(cuda::PtrStepSz<uchar4> left, cuda::PtrStepSz<uchar4>
 		result(y, x).y = (1.0 - alpha) * right(y, x).y + alpha * left(y, x).y;
 		result(y, x).z = (1.0 - alpha) * right(y, x).z + alpha * left(y, x).z;
 		result(y, x).w = (1.0 - alpha) * right(y, x).w + alpha * left(y, x).w;
+	}
+}
+
+//最佳缝合线图像融合, 仅适用于CV_8UC4
+__global__ void ImageBlend_BestSeam(cuda::PtrStepSz<uchar4> left, cuda::PtrStepSz<uchar4> right, cuda::PtrStepSz<int> seam, cuda::PtrStepSz<uchar4> result, int len) {
+	int x = blockIdx.x * blockDim.x + threadIdx.x;
+	int y = blockIdx.y * blockDim.y + threadIdx.y;
+	if (x >= result.cols || y >= result.rows)	return;
+
+
+	if (right(y, x).w == 0) {
+		result(y, x).x = left(y, x).x;
+		result(y, x).y = left(y, x).y;
+		result(y, x).z = left(y, x).z;
+		result(y, x).w = left(y, x).w;
+	}
+	else if (left(y, x).w == 0) {
+		result(y, x).x = right(y, x).x;
+		result(y, x).y = right(y, x).y;
+		result(y, x).z = right(y, x).z;
+		result(y, x).w = right(y, x).w;
+	}
+	else if (x < seam(y, 0)) {
+		result(y, x).x = left(y, x).x;
+		result(y, x).y = left(y, x).y;
+		result(y, x).z = left(y, x).z;
+		result(y, x).w = left(y, x).w;
+	}
+	else if (x > seam(y, 0)) {
+		result(y, x).x = right(y, x).x;
+		result(y, x).y = right(y, x).y;
+		result(y, x).z = right(y, x).z;
+		result(y, x).w = right(y, x).w;
+	}
+	else {
+		double alpha = len + seam(y, 0) - x;
+		alpha = alpha / (double)(2.0 * len);
+		alpha = 0.5;
+		result(y, x).x = (1.0 - alpha) * right(y, x).x + alpha * left(y, x).x;
+		result(y, x).y = (1.0 - alpha) * right(y, x).y + alpha * left(y, x).y;
+		result(y, x).z = (1.0 - alpha) * right(y, x).z + alpha * left(y, x).z;
+		result(y, x).w = (1.0 - alpha) * right(y, x).w + alpha * left(y, x).w;
+	}
+}
+
+//渐入渐出图像融合, 仅适用于CV_8UC4
+__global__ void ImageBlend_liner(cuda::PtrStepSz<uchar4> left, cuda::PtrStepSz<uchar4> right, cuda::PtrStepSz<int> seam, cuda::PtrStepSz<uchar4> result, int overlap_left, int overlap_right) {
+	int x = blockIdx.x * blockDim.x + threadIdx.x;
+	int y = blockIdx.y * blockDim.y + threadIdx.y;
+	if (x >= result.cols || y >= result.rows)	return;
+
+
+	if (right(y, x).w == 0) {
+		result(y, x).x = left(y, x).x;
+		result(y, x).y = left(y, x).y;
+		result(y, x).z = left(y, x).z;
+		result(y, x).w = left(y, x).w;
+	}
+	else if (left(y, x).w == 0) {
+		result(y, x).x = right(y, x).x;
+		result(y, x).y = right(y, x).y;
+		result(y, x).z = right(y, x).z;
+		result(y, x).w = right(y, x).w;
+	}
+	else if (x < overlap_left) {
+		result(y, x).x = left(y, x).x;
+		result(y, x).y = left(y, x).y;
+		result(y, x).z = left(y, x).z;
+		result(y, x).w = left(y, x).w;
+	}
+	else if (x > overlap_right) {
+		result(y, x).x = right(y, x).x;
+		result(y, x).y = right(y, x).y;
+		result(y, x).z = right(y, x).z;
+		result(y, x).w = right(y, x).w;
+	}
+	else {
+		double alpha = overlap_right - x;
+		alpha = alpha / (double)(overlap_right - overlap_left);
+		result(y, x).x = (1.0 - alpha) * right(y, x).x + alpha * left(y, x).x;
+		result(y, x).y = (1.0 - alpha) * right(y, x).y + alpha * left(y, x).y;
+		result(y, x).z = (1.0 - alpha) * right(y, x).z + alpha * left(y, x).z;
+		result(y, x).w = (1.0 - alpha) * right(y, x).w + alpha * left(y, x).w;
+	}
+}
+
+//把周围变为白色, 仅适用于CV_8UC4
+__global__ void DrawWhite(cuda::PtrStepSz<uchar4> result) {
+	int x = blockIdx.x * blockDim.x + threadIdx.x;
+	int y = blockIdx.y * blockDim.y + threadIdx.y;
+	if (x >= result.cols || y >= result.rows)	return;
+
+
+	if (result(y, x).w == 0) {
+		result(y, x).x = 255;
+		result(y, x).y = 255;
+		result(y, x).z = 255;
+		result(y, x).w = 255;
 	}
 }
 
@@ -815,6 +927,9 @@ public:
 		sift->detectAndCompute(left, Mat(), keypoint1, descriptors1);
 		sift->detectAndCompute(right, Mat(), keypoint2, descriptors2);
 
+
+
+
 		//特征点匹配
 		vector<vector<DMatch> > matches;
 		cuda::GpuMat descriptors1_gpu, descriptors2_gpu;
@@ -830,6 +945,14 @@ public:
 				good_matches.push_back(matches[i][0]);
 			}
 		}
+
+		//绘制匹配图
+		//Mat img_matches;
+		//drawMatches(left, keypoint1, right, keypoint2, good_matches, img_matches);
+		//imwrite("match_img.jpg", img_matches);
+		//resize(img_matches, img_matches, Size(0, 0), 0.4, 0.4, INTER_LINEAR);
+		//imshow("img_matches", img_matches);
+		//waitKey(0);
 
 		//选取匹配点对建立方程
 		vector<Point2f> p1, p2;
@@ -940,6 +1063,8 @@ public:
 
 	//使用现有的H拼接两幅图片
 	int stitch(cuda::GpuMat left_gpu, cuda::GpuMat right_gpu, Mat &result) {
+
+		int t1 = clock();
 		//剔除右图多余部分
 		cuda::GpuMat right_temp_gpu;
 		right_gpu.copyTo(right_temp_gpu);
@@ -952,10 +1077,9 @@ public:
 		}
 
 		//右图进行透视变换
-		//int t1 = clock();
 		cuda::warpPerspective(right_temp_gpu, right_temp_gpu, H, result_siz);
 		int t2 = clock();
-		//cout << "t = " << t1 - t2 << endl;
+		//cout << "透视变换:" << t2 - t1 << endl;
 
 		//右图高斯模糊,低效
 		//Mat temp;
@@ -963,38 +1087,59 @@ public:
 		//GaussianBlur(temp, temp, Size(3, 3), 3, 3);
 		//right_temp_gpu.upload(temp);
 
+
 		//右图曝光差异矫正
 		block_num = dim3((right_temp_gpu.cols + block_siz.x - 1) / block_siz.x, (right_temp_gpu.rows + block_siz.y - 1) / block_siz.y);
 		GainCompensation_8UC4 << <block_num, block_siz >> > (right_temp_gpu, alpha_blue, beta_blue, alpha_green, beta_green, alpha_red, beta_red, overlap_right);
 		CHECK(cudaGetLastError());
 		CHECK(cudaDeviceSynchronize());
-
+		int t3 = clock();
+		//cout << "曝光补偿:" << t3 - t2 << endl;
 
 		//求最佳缝合线
 		cuda::GpuMat seam_gpu;
 		cuda::GpuMat left_temp_gpu(result_siz, CV_8UC4);
 		left_gpu.copyTo(left_temp_gpu(Rect(0, 0, left_gpu.cols, left_gpu.rows)));
 		GetOptimalSeam_CPU(left_temp_gpu, right_temp_gpu, seam_gpu, overlap_left, overlap_right);
+		int t4 = clock();
+		//cout << "求解缝合线:" << t4 - t3 << endl;
 
 		//最佳缝合线拼接
 		cuda::GpuMat result_gpu(result_siz, CV_8UC4);	
 		{
 			dim3 block_siz(32, 32);
 			dim3 block_num((result_gpu.cols + block_siz.x - 1) / block_siz.x, (result_gpu.rows + block_siz.y - 1) / block_siz.y);
-			ImageBlend << <block_num, block_siz >> > (left_temp_gpu, right_temp_gpu, seam_gpu, result_gpu, 20);
+			ImageBlend << <block_num, block_siz >> > (left_temp_gpu, right_temp_gpu, seam_gpu, result_gpu, 20);	//结合
+			//ImageBlend_BestSeam << <block_num, block_siz >> > (left_temp_gpu, right_temp_gpu, seam_gpu, result_gpu, 20);	//最佳缝合线
+			//ImageBlend_liner << <block_num, block_siz >> > (left_temp_gpu, right_temp_gpu, seam_gpu, result_gpu, overlap_left, overlap_right); //渐入渐出
 			CHECK(cudaGetLastError());
 			CHECK(cudaDeviceSynchronize());
 		}
-		
+		int t5 = clock();
+		//cout << "融合" << t5 - t4 << endl;
 
 		//绘制缝合线
 		//DrawSeam << <1, 1 >> > (result_gpu, seam_gpu);
 		//CHECK(cudaGetLastError());
 		//CHECK(cudaDeviceSynchronize());
 
+		//周围变为白色
+		//{
+		//	dim3 block_siz(32, 32);
+		//	dim3 block_num((result_gpu.cols + block_siz.x - 1) / block_siz.x, (result_gpu.rows + block_siz.y - 1) / block_siz.y);
+		//	DrawWhite << <block_num, block_siz >> > (result_gpu); //渐入渐出图像融合
+		//	CHECK(cudaGetLastError());
+		//	CHECK(cudaDeviceSynchronize());
+		//}
+
 		//下载最终结果
-		cuda::resize(result_gpu, result_gpu, Size(0, 0), 0.3, 0.3);
+		//cuda::resize(result_gpu, result_gpu, Size(0, 0), 0.3, 0.3);
+		//result_gpu.download(result);
+		//imwrite("最终结果.jpg", result);
+		//cuda::resize(result_gpu, result_gpu, Size(0, 0), 0.3, 0.3);
 		result_gpu.download(result);
+		int t6 = clock();
+		//cout << "下载：" << t6 - t5 << endl;
 		return 0;
 	}
 };

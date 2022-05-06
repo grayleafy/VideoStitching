@@ -1,6 +1,7 @@
 ﻿#include "cuda_runtime.h"
 #include "device_launch_parameters.h"
 
+#include<opencv2/video/video.hpp>
 #include<opencv2/cudaimgproc.hpp>
 #include<opencv2/cudafeatures2d.hpp>
 #include<opencv2/cudawarping.hpp>
@@ -203,9 +204,9 @@ int main()
 	string url_right = "rtsp://192.168.31.24:554/user=admin&password=&channel=1&stream=0.sdp?real_stream";
 	string filename = "intrinsics.xml";
 	Corrector corrector(filename);
-	int opt = 3;
+	int opt = 4;
 
-	//rtsp视频流
+	//rtsp视频
 	if (opt == 1) {
 		Video cap_left(url_left);
 		Video cap_right(url_right);
@@ -359,22 +360,35 @@ int main()
 
 		if (!cap_left->nextFrame(left_gpu))		return -1;
 		if (!cap_right->nextFrame(right_gpu))	return -1;	
+		Mat temp;
+		left_gpu.download(temp);
+		imwrite("实验室.jpg", temp);
+		return 0;
 		corrector.FishRemap(left_gpu, left_gpu);
 		corrector.FishRemap(right_gpu, right_gpu);
 		//cuda::resize(left_gpu, left_gpu, Size(0, 0), 0.6, 0.6);
 		//cuda::resize(right_gpu, right_gpu, Size(0, 0), 0.6, 0.6);
 		cout << "left size:" << left_gpu.size() << endl;
 		cout << "right size:" << right_gpu.size() << endl;
+		int t1 = clock();
 		if (video_stitcher.init(left_gpu, right_gpu) != 0)	return -1;
+		int t2 = clock();
+		cout << "初始化耗时: " << t2 - t1 << endl;
 		cout << "初始化成功\n";
+
+		
+
 
 		int last_t = clock();
 		while (1) {
 			if (!cap_left->nextFrame(left_gpu))		break;
 			if (!cap_right->nextFrame(right_gpu))	break;
 
+			int t3 = clock();
 			corrector.FishRemap(left_gpu, left_gpu);
 			corrector.FishRemap(right_gpu, right_gpu);
+			int t4 = clock();
+			cout << "畸变矫正:" << t4 - t3 << endl;
 
 			//cuda::resize(left_gpu, left_gpu, Size(0, 0), 0.6, 0.6);
 			//cuda::resize(right_gpu, right_gpu, Size(0, 0), 0.6, 0.6);
@@ -386,8 +400,12 @@ int main()
 			}
 
 			//resize(result, result, Size(0, 0), 0.3, 0.3);
+			int t5 = clock();
 			imshow("res", result);
 			waitKey(1);
+			int t6 = clock();
+			cout << "显示图像:" << t6 - t5 << endl;
+
 			int t = clock();
 			cout << "每帧耗时:" << t - last_t << endl;
 			last_t = t;
@@ -422,13 +440,28 @@ int main()
 
 			//resize(result, result, Size(0, 0), 0.6, 0.6);
 			imshow("res", result);
-			waitKey(1);
+			waitKey(0);
 			int t = clock();
 			cout << "每帧耗时:" << t - last_t << endl;
 			last_t = t;
 		}
 	}
-	
+	//测试
+	else if (opt == 6) {
+		VideoCapture cap2;
+		cap2.open("dayleft.avi");
+		Mat a;
+		if (cap2.isOpened())	cout << "打开成功\n";
+		while (1) {
+			int t1 = clock();
+			cap2.read(a);
+			int t2 = clock();
+			cout <<"a\n" << a;
+			cout << "耗时 " << t2 - t1 << endl;
+			imshow("a", a);
+			waitKey(10);
+		}
+	}
 
 }
 
