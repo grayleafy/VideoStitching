@@ -254,7 +254,7 @@ int main()
 	string url_right = "rtsp://192.168.31.24:554/user=admin&password=&channel=1&stream=0.sdp?real_stream";
 	string filename = "intrinsics.xml";
 	Corrector corrector(filename);
-	int opt = 8;
+	int opt = 3;
 
 	//rtsp视频
 	if (opt == 1) {
@@ -322,7 +322,7 @@ int main()
 
 		showThread.join();
 	}
-	//靖世九柱，流水线
+	//靖世九柱，线程池
 	if (opt == 2) {
 		int last_t = clock();
 		thread_last_time = clock();
@@ -353,7 +353,7 @@ int main()
 		
 		showThread.join();
 	}
-	//读入实验室视频，流水线
+	//实验室视频，线程池
 	else if (opt == 3) {
 		Ptr<cudacodec::VideoReader> cap_left = cudacodec::createVideoReader(string("day left.mp4"));
 		Ptr<cudacodec::VideoReader> cap_right = cudacodec::createVideoReader(string("day right.mp4"));
@@ -401,7 +401,7 @@ int main()
 
 		showThread.join();
 	}
-	//固定摄像头，读入实验室视频
+	//实验室视频，单线程
 	else if (opt == 4){
 		VideoStitcher video_stitcher;
 		Ptr<cudacodec::VideoReader> cap_left = cudacodec::createVideoReader(string("day left.mp4"));
@@ -462,7 +462,7 @@ int main()
 			//waitKey(0);
 		}
 	}
-	//靖世九柱，固定摄像头
+	//靖世九柱，单线程
 	else if (opt == 5){
 		Mat left = imread("left.jpg");
 		Mat right = imread("right.jpg");
@@ -496,7 +496,7 @@ int main()
 			last_t = t;
 		}
 	}
-	//测试
+	//奇怪的测试
 	else if (opt == 6) {
 		VideoCapture cap2;
 		cap2.open("dayleft.avi");
@@ -551,7 +551,7 @@ int main()
 
 		cout << "结束\n";
 	}
-	//宿舍视频
+	//拼接录制的视频，线程池
 	else if (opt == 8) {
 		Ptr<cudacodec::VideoReader> cap_left = cudacodec::createVideoReader(string("room_left.avi"));
 		Ptr<cudacodec::VideoReader> cap_right = cudacodec::createVideoReader(string("room_right.avi"));
@@ -560,13 +560,7 @@ int main()
 		if (!cap_left->nextFrame(left_gpu))		return -1;
 		if (!cap_right->nextFrame(right_gpu))	return -1;
 
-		//Mat temp;
-		//left_gpu.download(temp);
-		//imshow("tmp", temp);
-		//waitKey(10000);
-		//cuda::cvtColor(left_gpu, left_gpu, COLOR_BGR2BGRA);
-		//cuda::cvtColor(right_gpu, right_gpu, COLOR_BGR2BGRA);
-		//cout << "???\n";
+		
 		corrector.FishRemap(left_gpu, left_gpu);
 		corrector.FishRemap(right_gpu, right_gpu);
 		VideoStitcher stitcher;
@@ -585,17 +579,7 @@ int main()
 			corrector.FishRemap(left_gpu, left_gpu);
 			corrector.FishRemap(right_gpu, right_gpu);
 
-			//cuda::resize(src_left_gpu, src_left_gpu, Size(0, 0), 0.5, 0.5);
-			//cuda::resize(src_right_gpu, src_right_gpu, Size(0, 0), 0.5, 0.5);
-
-			//Mat src_left, src_right;
-			//src_left_gpu.download(src_left);
-			//src_right_gpu.download(src_right);
-			//imshow("left", src_left);
-			//imshow("right", src_right);
-			//imwrite("day left.jpg", src_left);
-			//imwrite("day right.jpg", src_right);
-			//waitKey(1);
+			
 			int now = clock();
 			pool.enqueue(stitch_thread, left_gpu, right_gpu, now, stitcher);
 			Sleep(10);

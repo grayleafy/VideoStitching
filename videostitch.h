@@ -1133,9 +1133,6 @@ public:
 		//}
 
 		//下载最终结果
-		//cuda::resize(result_gpu, result_gpu, Size(0, 0), 0.3, 0.3);
-		//result_gpu.download(result);
-		//imwrite("最终结果.jpg", result);
 		cuda::resize(result_gpu, result_gpu, Size(0, 0), 0.3, 0.3);
 		result_gpu.download(result);
 		int t6 = clock();
