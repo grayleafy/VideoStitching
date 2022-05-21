@@ -339,6 +339,7 @@ __global__ void CalE(cuda::PtrStepSz<uchar> left, cuda::PtrStepSz<uchar> right, 
 	double grand_right_y = res;
 
 	E(y, x) += d_fabs((grand_left_x - grand_right_x) * (grand_left_y - grand_right_y));
+	//E(y, x) += grand_left_x * grand_left_x + grand_left_y * grand_left_y + grand_right_x * grand_right_x + grand_right_y * grand_right_y;
 	return;
 }
 
@@ -663,8 +664,8 @@ int GetOptimalSeam_CPU(cuda::GpuMat left, cuda::GpuMat right, cuda::GpuMat &seam
 				if (x - i >= 0) {
 					p_path[2 * x] += p_E[x - i];
 				}
-				else {
-
+				if (x + i < overlap_len){
+					p_path[2 * x] += p_E[x + i];
 				}
 				if (x + i < overlap_len)	p_path[2 * x] += p_E[x + i];
 			}
@@ -906,7 +907,7 @@ public:
 		//计算大小参数
 		left_siz = left_gpu.size();
 		right_siz = right_gpu.size();
-		result_siz = Size(2.5 * left_siz.width, 1.5 * left_siz.height);
+		result_siz = Size(2.0 * left_siz.width, 1.5 * left_siz.height);
 
 		//下载图片，低效
 		Mat left, right;
@@ -1063,7 +1064,6 @@ public:
 
 	//使用现有的H拼接两幅图片
 	int stitch(cuda::GpuMat left_gpu, cuda::GpuMat right_gpu, Mat &result) {
-
 		int t1 = clock();
 		//剔除右图多余部分
 		cuda::GpuMat right_temp_gpu;
@@ -1136,7 +1136,7 @@ public:
 		//cuda::resize(result_gpu, result_gpu, Size(0, 0), 0.3, 0.3);
 		//result_gpu.download(result);
 		//imwrite("最终结果.jpg", result);
-		//cuda::resize(result_gpu, result_gpu, Size(0, 0), 0.3, 0.3);
+		cuda::resize(result_gpu, result_gpu, Size(0, 0), 0.3, 0.3);
 		result_gpu.download(result);
 		int t6 = clock();
 		//cout << "下载：" << t6 - t5 << endl;

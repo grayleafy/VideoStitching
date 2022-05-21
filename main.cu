@@ -85,8 +85,7 @@ public:
 
 
 //读取视频流线程
-void read_thread(Ptr<cudacodec::VideoReader> &cap, cuda::GpuMat &d_frame, mutex &mtx) {
-	int flag = 1;
+void read_thread(Ptr<cudacodec::VideoReader> &cap, cuda::GpuMat &d_frame, mutex &mtx, int &flag) {
 	//int last_t = clock();
 	while (flag) {
 		unique_lock<mutex> m(mtx);
@@ -99,27 +98,78 @@ void read_thread(Ptr<cudacodec::VideoReader> &cap, cuda::GpuMat &d_frame, mutex 
 		//int t = clock();
 		//cout << "读取每帧：" << t - last_t << endl;
 		//last_t = t;
+
 	}
+}
+
+//保存视频线程
+void save_thread(Ptr<cudacodec::VideoReader> &cap, string filename, mutex &mtx, int &flag) {
+	cuda::GpuMat d_frame;
+	flag = cap->nextFrame(d_frame);
+	Size siz = d_frame.size();
+	int codec = VideoWriter::fourcc('M', 'J', 'P', 'G');
+	int fps = 25;
+	VideoWriter writer;
+	writer.open(filename, codec, fps, siz);
+	//int last_t = clock();
+	while (flag) {
+		unique_lock<mutex> m(mtx);
+		flag = cap->nextFrame(d_frame);
+		m.unlock();
+		cuda::cvtColor(d_frame, d_frame, COLOR_BGRA2BGR);
+		Mat temp;
+		d_frame.download(temp);
+		writer.write(temp);
+		//int t = clock();
+		//cout << "读取每帧：" << t - last_t << "    " << filename << endl;
+		//last_t = t;
+		Sleep(10);
+	}
+	writer.release();
 }
 
 //rtsp视频流，输入url初始化
 class Video {
-	
 	string url;
 	Ptr<cudacodec::VideoReader> cap;
 	cuda::GpuMat d_frame;
 	Mat cpu_frame;
 	mutex mtx;
+	string filename;
+	int flag_read = 0;
+	int flag_save = 0;
 public:
-	
 	Video(string url) :url(url) {
 		cap = cudacodec::createVideoReader(url);
 	}
 
+	void SetFilename(string filename){
+		this->filename = filename;
+	}
+
 	//在子线程中不断读取实时视频
 	void run() {
-		thread t(read_thread, ref(cap), ref(d_frame), ref(mtx));
+		flag_read = 1;
+		thread t(read_thread, ref(cap), ref(d_frame), ref(mtx), ref(flag_read));
 		t.detach();
+	}
+
+	void run_stop() {
+		unique_lock<mutex> lck(mtx);
+		flag_read = 0;
+	}
+
+	//保存视频
+	void save(string f) {
+		filename = f;
+		flag_save = 1;
+		thread t(save_thread, ref(cap), ref(filename), ref(mtx), ref(flag_save));
+		t.detach();
+	}
+
+	void save_stop() {
+		unique_lock<mutex> lck(mtx);
+		flag_save = 0;
 	}
 
 	cuda::GpuMat getGpuMat() {
@@ -204,7 +254,7 @@ int main()
 	string url_right = "rtsp://192.168.31.24:554/user=admin&password=&channel=1&stream=0.sdp?real_stream";
 	string filename = "intrinsics.xml";
 	Corrector corrector(filename);
-	int opt = 4;
+	int opt = 8;
 
 	//rtsp视频
 	if (opt == 1) {
@@ -462,7 +512,97 @@ int main()
 			waitKey(10);
 		}
 	}
+	//存视频
+	else if (opt == 7) {
+		Video cap_left(url_left);
+		Video cap_right(url_right);
+		cap_left.run();
+		cap_right.run();
+		namedWindow("left");
+		namedWindow("right");
 
+		Size siz;
+		cuda::GpuMat left_gpu, right_gpu;
+		while (1) {
+			cap_left.read(left_gpu);
+			cap_right.read(right_gpu);
+			siz = left_gpu.size();
+			corrector.FishRemap(left_gpu, left_gpu);
+			corrector.FishRemap(right_gpu, right_gpu);
+			cuda::resize(left_gpu, left_gpu, Size(0, 0), 0.5, 0.5);
+			cuda::resize(right_gpu, right_gpu, Size(0, 0), 0.5, 0.5);
+			Mat left, right;
+			left_gpu.download(left);
+			right_gpu.download(right);
+			imshow("left", left);
+			imshow("right", right);
+			if (waitKey(40) == 13)	break;
+		}
+		cap_left.run_stop();
+		cap_right.run_stop();
+		destroyAllWindows();
+
+		cap_left.save("room_left.avi");
+		cap_right.save("room_right.avi");
+
+		Sleep(30000);
+		cap_left.save_stop();
+		cap_right.save_stop();
+
+		cout << "结束\n";
+	}
+	//宿舍视频
+	else if (opt == 8) {
+		Ptr<cudacodec::VideoReader> cap_left = cudacodec::createVideoReader(string("room_left.avi"));
+		Ptr<cudacodec::VideoReader> cap_right = cudacodec::createVideoReader(string("room_right.avi"));
+		cuda::GpuMat left_gpu, right_gpu;
+
+		if (!cap_left->nextFrame(left_gpu))		return -1;
+		if (!cap_right->nextFrame(right_gpu))	return -1;
+
+		//Mat temp;
+		//left_gpu.download(temp);
+		//imshow("tmp", temp);
+		//waitKey(10000);
+		//cuda::cvtColor(left_gpu, left_gpu, COLOR_BGR2BGRA);
+		//cuda::cvtColor(right_gpu, right_gpu, COLOR_BGR2BGRA);
+		//cout << "???\n";
+		corrector.FishRemap(left_gpu, left_gpu);
+		corrector.FishRemap(right_gpu, right_gpu);
+		VideoStitcher stitcher;
+		stitcher.init(left_gpu, right_gpu);
+
+		//显示结果线程
+		thread showThread(show_thread, 10);
+		ThreadPool pool(16);
+
+		int last_t = clock();
+		int tt = 1;
+		while (1) {
+			if (!cap_left->nextFrame(left_gpu))		break;
+			if (!cap_right->nextFrame(right_gpu))	break;
+
+			corrector.FishRemap(left_gpu, left_gpu);
+			corrector.FishRemap(right_gpu, right_gpu);
+
+			//cuda::resize(src_left_gpu, src_left_gpu, Size(0, 0), 0.5, 0.5);
+			//cuda::resize(src_right_gpu, src_right_gpu, Size(0, 0), 0.5, 0.5);
+
+			//Mat src_left, src_right;
+			//src_left_gpu.download(src_left);
+			//src_right_gpu.download(src_right);
+			//imshow("left", src_left);
+			//imshow("right", src_right);
+			//imwrite("day left.jpg", src_left);
+			//imwrite("day right.jpg", src_right);
+			//waitKey(1);
+			int now = clock();
+			pool.enqueue(stitch_thread, left_gpu, right_gpu, now, stitcher);
+			Sleep(10);
+		}
+
+		showThread.join();
+	}
 }
 
 // Helper function for using CUDA to add vectors in parallel.
