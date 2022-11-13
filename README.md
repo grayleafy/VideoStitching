@@ -6,10 +6,10 @@
 ![72`AYE1_O88PEUTJ@P7)UG4](https://user-images.githubusercontent.com/86156654/201525662-e36cb10d-9813-470a-b1c5-f8e44151f18e.png)
 
 ## 拼接效果
-对于以下两个场景
+
 ![image](https://user-images.githubusercontent.com/86156654/201525816-7d9e9d34-0b62-4242-8361-51d0418b6884.png)
 ![image](https://user-images.githubusercontent.com/86156654/201525815-9346a741-9a62-406a-8ab8-30d5706543f2.png)
 
-拼接后可得
+
 ![image](https://user-images.githubusercontent.com/86156654/201525854-4cc0b588-3e5f-49bb-90ac-5449172a2849.png)
 
